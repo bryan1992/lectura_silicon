@@ -1,7 +1,9 @@
 import sys
 from PyQt6.QtWidgets import QApplication, QMainWindow, QComboBox, QLabel, QPushButton
+from PyQt6.QtCore import QThread, pyqtSignal
 from serial import Serial
 import serial.tools.list_ports
+import time
 
 class ComboBoxDinamico (QComboBox):
     def __init__(self, parent = None):
@@ -17,10 +19,38 @@ class ComboBoxDinamico (QComboBox):
         for puerto in puertos:
             self.addItem(puerto.device)
 
+class HiloSerial(QThread):
+    datos_recibidos = pyqtSignal(str) # Señal para enviar los datos crudos.
+
+    def __init__(self, puerto_serial):
+        super().__init__()
+        self.serial_port = puerto_serial
+        self.lectura_activa = True
+
+    def run(self):
+        # Enviar comando AT + esperar 200 ms
+        self.serial_port.write(b'AT\n')
+        time.sleep(0.2)
+
+        while self.lectura_activa:
+            if self.serial_port.in_waiting > 100:
+                try:
+                    # Datos en crudo del buffer serial.
+                    datos = self.serial_port.read(self.serial_port.in_waiting)
+                    self.datos_recibidos.emit(datos)
+                except Exception as e:
+                    print(f"Error de comunicación: {e}")
+                    self.lectura_activa = False
+            time.sleep(0.1) # Delay de 100 mseg. para no saturar el CPU.
+
+    def detener(self):
+        self.lectura_activa = False
+
 class VentanaPrincipal(QMainWindow):
     def __init__(self):
         super().__init__()
 
+        self.hilo_serial = None
         self.serial_port = None
         self.conectado = False
         self.boton_estado = False
@@ -78,6 +108,11 @@ class VentanaPrincipal(QMainWindow):
              if self.serial_port.is_open:
                 self.conectado = True
                 self.estatus.setText ("Conectado")
+
+                # Iniciar hilo de lectura de datos serial.
+                self.hilo_serial = HiloSerial(self.serial_port)
+                self.hilo_serial.datos_recibidos.connect(self.mostrar_dato_recibido) # Cuando se emita una señal se llamará a la función mostrar_dato_recibido.
+                self.hilo_serial.start()
                 
              else:
                 self.estatus.setText("No se pudo abrir el puerto")
@@ -88,9 +123,34 @@ class VentanaPrincipal(QMainWindow):
 
     def cerrar_puerto(self):
         if self.serial_port and self.serial_port.is_open:
+             # Detener el hilo si existe
+            if hasattr(self, "hilo_serial"):
+                self.hilo_serial.detener()
+                self.hilo_serial.wait()  # Espera a que el hilo termine
+
             self.serial_port.close()
             self.conectado = False
             self.estatus.setText("Desconectado.")
+
+    def enviar_comando_at(self):
+        self.serial_port.write(b'AT\n')
+
+    def mostrar_dato_recibido(self, datos):
+        print(f"Dato recibido en GUI, {datos}")
+
+    def closeEvent(self, event):
+        # Si existe el hilo serial, detenerlo y esperar a que termine
+        # La función hasattr verifica si un objeto tiene el atributo indicado.
+        if hasattr(self, "hilo_serial") and self.hilo_serial is not None:
+            self.hilo_serial.detener()
+            self.hilo_serial.wait()  # Espera a que el hilo termine
+    
+        # Si el puerto serial está abierto, cerrarlo
+        if self.serial_port and self.serial_port.is_open:
+            self.serial_port.close()
+
+        event.accept()  # Aceptar el cierre de la ventana
+
     
 app = QApplication(sys.argv)
 ventana = VentanaPrincipal()
