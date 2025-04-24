@@ -29,8 +29,9 @@ class HiloSerial(QThread):
 
     def run(self):
         # Enviar comando AT + esperar 200 ms
-        self.serial_port.write(b'AT\n')
-        time.sleep(0.2)
+        if self.serial_port and self.serial_port.is_open:
+            self.serial_port.write(b'AT\n')
+            time.sleep(0.2)
 
         while self.lectura_activa:
             if self.serial_port.in_waiting > 100:
@@ -122,14 +123,17 @@ class VentanaPrincipal(QMainWindow):
              print(f"Error: {e}")
 
     def cerrar_puerto(self):
+        # Detener el hilo si es que existe.
+        if hasattr(self, "hilo_serial") and self.hilo_serial is not None:
+            self.hilo_serial.detener()
+            self.hilo_serial.wait()  # Espera a que el hilo termine
+            self.hilo_serial = None # Se limpia esa variable/instancia.
+        
+        # Cerrar puerto serial si está abierto.
         if self.serial_port and self.serial_port.is_open:
-             # Detener el hilo si existe
-            if hasattr(self, "hilo_serial"):
-                self.hilo_serial.detener()
-                self.hilo_serial.wait()  # Espera a que el hilo termine
-
             self.serial_port.close()
             self.conectado = False
+            self.serial_port = None
             self.estatus.setText("Desconectado.")
 
     def enviar_comando_at(self):
@@ -144,13 +148,14 @@ class VentanaPrincipal(QMainWindow):
         if hasattr(self, "hilo_serial") and self.hilo_serial is not None:
             self.hilo_serial.detener()
             self.hilo_serial.wait()  # Espera a que el hilo termine
+            self.hilo_serial = None
     
         # Si el puerto serial está abierto, cerrarlo
         if self.serial_port and self.serial_port.is_open:
             self.serial_port.close()
+            self.serial_port = None
 
         event.accept()  # Aceptar el cierre de la ventana
-
     
 app = QApplication(sys.argv)
 ventana = VentanaPrincipal()
