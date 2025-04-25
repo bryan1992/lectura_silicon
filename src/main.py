@@ -22,7 +22,7 @@ class ComboBoxDinamico (QComboBox):
 class HiloSerial(QThread):
     datos_recibidos = pyqtSignal(str) # Señal para enviar los datos crudos.
 
-    def __init__(self, puerto_serial):
+    def __init__(self, puerto_serial, cola_datos):
         super().__init__()
         self.serial_port = puerto_serial
         self.lectura_activa = True
@@ -39,6 +39,7 @@ class HiloSerial(QThread):
                     # Datos en crudo del buffer serial.
                     datos = self.serial_port.read(self.serial_port.in_waiting)
                     self.datos_recibidos.emit(datos)
+                    self.cola.put(datos) # Se ponen los datos crudos en la cola.
                 except Exception as e:
                     print(f"Error de comunicación: {e}")
                     self.lectura_activa = False
@@ -46,6 +47,43 @@ class HiloSerial(QThread):
 
     def detener(self):
         self.lectura_activa = False
+
+class HiloProcesamiento (QThread):
+    procesamiento_completo = pyqtSignal(str) # Señal para enviar el dato ya procesado.
+
+    def __init__(self, cola_datos, parent = None):
+        super().__init__(parent)
+        self.procesamiento_activo = True
+
+    def run(self):
+        while self.procesamiento_activo:
+            if not self.cola.empty():
+                dato_crudo = self.cola.get()
+                resultado = self.procesar_dato(dato_crudo)
+                self.procesamiento_completo.emit(resultado)
+                time.sleep(0.1) # Delay, jeje
+    
+    def procesar_dato(self, datos):
+        
+        try:
+            # Se decodifica de bytes a texto y después se limpia el inicio y final de la cadena.
+            texto = datos.decode("utf-8").strip()
+
+            # Se divide la cadena en sub-cadenas, separando cada elemento por un salto de línea en la cadena original.
+            valores = texto.split('\n')
+
+            enteros = [int(valor) for valor in valores if valor.strip() != '']
+            print(f"Datos procesados: {enteros}")
+            self.procesamiento_completo.emit(enteros)
+        except Exception as e:
+            print(f"Error al procesar: {e}")
+
+
+
+    def detener(self):
+        self.procesamiento_activo = False
+
+
 
 class VentanaPrincipal(QMainWindow):
     def __init__(self):
