@@ -1,8 +1,10 @@
 import sys
 from PyQt6.QtWidgets import QApplication, QMainWindow, QComboBox, QLabel, QPushButton
 from PyQt6.QtCore import QThread, pyqtSignal
+import pyqtgraph as pg
 from serial import Serial
 import serial.tools.list_ports
+import numpy as np
 import time
 
 class ComboBoxDinamico (QComboBox):
@@ -27,6 +29,8 @@ class HiloSerial(QThread):
         self.serial_port = puerto_serial
         self.lectura_activa = True
 
+        
+
     def run(self):
         # Enviar comando AT + esperar 200 ms
         if self.serial_port and self.serial_port.is_open:
@@ -50,6 +54,8 @@ class HiloSerial(QThread):
 
 class HiloProcesamiento (QThread):
     procesamiento_completo = pyqtSignal(str) # Señal para enviar el dato ya procesado.
+    mediciones = pyqtSignal() # Datos para graficar.
+    booleanos = pyqtSignal() # Señal para enviar dato de booleanos.
 
     def __init__(self, cola_datos, parent = None):
         super().__init__(parent)
@@ -63,22 +69,49 @@ class HiloProcesamiento (QThread):
                 self.procesamiento_completo.emit(resultado)
                 time.sleep(0.1) # Delay, jeje
     
-    def procesar_dato(self, datos):
+    def procesar_dato(self, dato_crudo: bytes, delimitador: int = 10):
         
-        try:
-            # Se decodifica de bytes a texto y después se limpia el inicio y final de la cadena.
-            texto = datos.decode("utf-8").strip()
+            # Convertir los datos crudos a un array Numpy de enteros (uint8)
+            arreglo_uint8 = np.frombuffer(dato_crudo, dtype = np.uint8)
 
-            # Se divide la cadena en sub-cadenas, separando cada elemento por un salto de línea en la cadena original.
-            valores = texto.split('\n')
+            # Obtener las posiciones de los delimitadores, el resultado es un array Numpy.
+            indices = np.where(arreglo_uint8 == delimitador)[0]
 
-            enteros = [int(valor) for valor in valores if valor.strip() != '']
-            print(f"Datos procesados: {enteros}")
-            self.procesamiento_completo.emit(enteros)
-        except Exception as e:
-            print(f"Error al procesar: {e}")
+            if len(indices) == 0:
+                return[] #No hay ningún delimitador.
+            
+            segmentos = [] # Lista vacía de Python, no es un arreglo de Numpy.
+            inicio = 0
+            for fin in indices: # Segmentación de arreglo Numpy en una lista.
+                if inicio > fin:
+                    segmento = arreglo_uint8[inicio:fin]
+                    segmentos.append(segmento) # Lista donde cada elemento es un arreglo de Numpy.
+                inicio = fin + 1
+            
+            if len(segmentos) >= 3:
+                # Reemplazar extremos de la lista
+                segmentos[0] = segmentos[1]
+                segmentos[-1] = segmentos[-2]
 
+            return segmentos
 
+    def generar_matriz_booleanos(self, segmentos):
+        # Matriz de booleanos.
+        # Inicializar lista de bits.
+        lista_bits = []
+
+        for segmento in segmentos:
+            if len(segmento) > 4:
+                byte = segmento[4] # Escalar de tipo uint8.
+                bits = np.unpackbits(np.array([byte], dtype=np.uint8)) # Se convierte el escalar a un arreglo de un byte, después a un arreglo Numpy de 8 bits. 
+                lista_bits.append(bits) # Lista de arreglos Numpy
+        
+        matriz = np.array(lista_bits, dtype= bool) 
+        
+
+    def proceso_general(self, segmentos):
+        # Gráfica de datos.
+        ...
 
     def detener(self):
         self.procesamiento_activo = False
@@ -96,7 +129,7 @@ class VentanaPrincipal(QMainWindow):
 
         # Métodos de la sub-clase.
         self.setWindowTitle("Comunicación Silicon.")
-        self.setGeometry(200, 200, 400, 300)
+        self.setGeometry(200, 200, 400, 600)
 
         self.crear_widgets()
         self.conectar_senales()
@@ -121,6 +154,14 @@ class VentanaPrincipal(QMainWindow):
         #Indicador de estado de puerto.
         self.estatus = QLabel("No conectado", self)
         self.estatus.move(10, 100)
+
+        # Gráfica de datos en tiempo real.
+        self.grafica = pg.PlotWidget(self)
+        self.grafica.resize(350, 200)
+        self.grafica.move(10, 200)
+        # Datos de ejemplo
+        datos = np.array([10, 30, 20, 40, 60, 20, 10], dtype=np.uint8)
+        self.grafica.plot(datos, pen='g')  # 'g' = verde
 
     def conectar_senales(self):
         self.boton_start_sesion.clicked.connect(self.abrir_o_cerrar)
