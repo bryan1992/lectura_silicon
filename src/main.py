@@ -29,8 +29,6 @@ class HiloSerial(QThread):
         self.serial_port = puerto_serial
         self.lectura_activa = True
 
-        
-
     def run(self):
         # Enviar comando AT + esperar 200 ms
         if self.serial_port and self.serial_port.is_open:
@@ -54,9 +52,7 @@ class HiloSerial(QThread):
 
 class HiloProcesamiento (QThread):
     procesamiento_completo = pyqtSignal(str) # Señal para enviar el dato ya procesado.
-    mediciones = pyqtSignal(object) # Datos para graficar.
-    booleanos = pyqtSignal(object) # Señal para enviar dato de booleanos.
-
+    
     def __init__(self, cola_datos, parent = None):
         super().__init__(parent)
         self.procesamiento_activo = True
@@ -95,6 +91,18 @@ class HiloProcesamiento (QThread):
 
             return segmentos
 
+     
+
+    def detener(self):
+        self.procesamiento_activo = False
+
+class HiloMatrizBits(QThread):
+    senal_matriz_bits = pyqtSignal(object)
+
+    def __init__(self, segmentos):
+        super().__init__()
+        self.segmentos = segmentos
+
     def generar_matriz_booleanos(self, segmentos):
         # Matriz de booleanos.
         # Inicializar lista de bits.
@@ -106,12 +114,14 @@ class HiloProcesamiento (QThread):
                 bits = np.unpackbits(np.array([byte], dtype=np.uint8)) # Se convierte el escalar a un arreglo de un byte, después a un arreglo Numpy de 8 bits. 
                 lista_bits.append(bits) # Lista de arreglos Numpy
         
-        matriz = np.array(lista_bits, dtype= bool) 
+        matriz = np.array(lista_bits, dtype= bool)
 
-    def detener(self):
-        self.procesamiento_activo = False
+class HiloGrafica(QThread):
+    senal_arreglo_datos = pyqtSignal(object)
 
-
+    def __init__(self, segmentos):
+        super().__init__()
+        self.segmentos = segmentos
 
 class VentanaPrincipal(QMainWindow):
     def __init__(self):
@@ -216,6 +226,10 @@ class VentanaPrincipal(QMainWindow):
     def mostrar_dato_recibido(self, datos):
         print(f"Dato recibido en GUI, {datos}")
 
+    def procesar_buffer(self):
+        #Iniciar hilo de procesamiento de buffer.
+        ...
+        
     def closeEvent(self, event):
         # Si existe el hilo serial, detenerlo y esperar a que termine
         # La función hasattr verifica si un objeto tiene el atributo indicado.
