@@ -54,8 +54,8 @@ class HiloSerial(QThread):
 
 class HiloProcesamiento (QThread):
     procesamiento_completo = pyqtSignal(str) # Señal para enviar el dato ya procesado.
-    mediciones = pyqtSignal() # Datos para graficar.
-    booleanos = pyqtSignal() # Señal para enviar dato de booleanos.
+    mediciones = pyqtSignal(object) # Datos para graficar.
+    booleanos = pyqtSignal(object) # Señal para enviar dato de booleanos.
 
     def __init__(self, cola_datos, parent = None):
         super().__init__(parent)
@@ -107,11 +107,6 @@ class HiloProcesamiento (QThread):
                 lista_bits.append(bits) # Lista de arreglos Numpy
         
         matriz = np.array(lista_bits, dtype= bool) 
-        
-
-    def proceso_general(self, segmentos):
-        # Gráfica de datos.
-        ...
 
     def detener(self):
         self.procesamiento_activo = False
