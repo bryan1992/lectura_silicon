@@ -1,11 +1,12 @@
 import sys
-from PyQt6.QtWidgets import QApplication, QMainWindow, QComboBox, QLabel, QPushButton
+from PyQt6.QtWidgets import QApplication, QMainWindow, QComboBox, QLabel, QPushButton, QWidget
 from PyQt6.QtCore import QThread, pyqtSignal
 import pyqtgraph as pg
 from serial import Serial
 import serial.tools.list_ports
 import numpy as np
 import time
+from queue import Queue
 
 class ComboBoxDinamico (QComboBox):
     def __init__(self, parent = None):
@@ -21,13 +22,52 @@ class ComboBoxDinamico (QComboBox):
         for puerto in puertos:
             self.addItem(puerto.device)
 
-class HiloSerial(QThread):
-    datos_recibidos = pyqtSignal(str) # Señal para enviar los datos crudos.
+class MatrizBit(QWidget):
+    def __init__(self, parent = None, rows = 20, cols = 8, spacing_x = 50, spacing_y = 20):
+        super().__init__(parent)
+        self.rows = rows
+        self.cols = cols
+        self.spacing_x = spacing_x
+        self.spacing_y = spacing_y
+        self.labels = []
+        self.bool_matrix = [[False for _ in range(self.cols)] for _ in range(self.rows)]
+        self.setFixedSize(cols * spacing_x + 20, rows * spacing_y + 20)
 
+        # Crear matriz de labels.
+        for i in range(rows):
+            row = []
+            for j in range(cols):
+                label = QLabel("False", self)
+                label.move(j * spacing_x + 20, i * spacing_y + 20)
+                label.setStyleSheet("color: black; font-weight: bold;")
+                row.append(label)
+
+            self.labels.append(row)
+
+    def actualizar(self, matriz):
+        # Validar dimensiones primero
+        if matriz.shape[0] > self.rows or matriz.shape[1] > self.cols:
+            print("⚠️ La matriz recibida excede las dimensiones visuales configuradas.")
+            return
+
+        for i in range(matriz.shape[0]):
+            for j in range(matriz.shape[1]):
+                valor = matriz[i][j]
+                self.bool_matrix[i][j] = valor
+                texto = "True" if valor else "False"
+                color = "green" if valor else "red"
+                self.labels[i][j].setText(texto)
+                self.labels[i][j].setStyleSheet(f"color: {color}; font-weight: bold;")
+        ...
+        
+
+class HiloSerial(QThread): # Hilo para recibir datos mediante RS-232.
+    
     def __init__(self, puerto_serial, cola_datos):
         super().__init__()
         self.serial_port = puerto_serial
-        self.lectura_activa = True
+        self.cola = cola_datos
+        self._activo = True
 
     def run(self):
         # Enviar comando AT + esperar 200 ms
@@ -35,35 +75,35 @@ class HiloSerial(QThread):
             self.serial_port.write(b'AT\n')
             time.sleep(0.2)
 
-        while self.lectura_activa:
+        while self._activo:
             if self.serial_port.in_waiting > 100:
                 try:
                     # Datos en crudo del buffer serial.
                     datos = self.serial_port.read(self.serial_port.in_waiting)
-                    self.datos_recibidos.emit(datos)
                     self.cola.put(datos) # Se ponen los datos crudos en la cola.
                 except Exception as e:
                     print(f"Error de comunicación: {e}")
-                    self.lectura_activa = False
+                    self._activo = False
             time.sleep(0.1) # Delay de 100 mseg. para no saturar el CPU.
 
     def detener(self):
-        self.lectura_activa = False
+        self._activo = False
 
-class HiloProcesamiento (QThread):
-    procesamiento_completo = pyqtSignal(str) # Señal para enviar el dato ya procesado.
-    
+class HiloProcesamiento (QThread): # Hilo para procesar datos crudos.
+    senal_procesada = pyqtSignal(object)    
+
     def __init__(self, cola_datos, parent = None):
         super().__init__(parent)
-        self.procesamiento_activo = True
+        self._activo = True
+        self.cola = cola_datos
 
     def run(self):
-        while self.procesamiento_activo:
+        while self._activo:
             if not self.cola.empty():
                 dato_crudo = self.cola.get()
                 resultado = self.procesar_dato(dato_crudo)
-                self.procesamiento_completo.emit(resultado)
-                time.sleep(0.1) # Delay, jeje
+                self.senal_procesada.emit(resultado)
+                time.sleep(0.1)
     
     def procesar_dato(self, dato_crudo: bytes, delimitador: int = 10):
         
@@ -90,18 +130,28 @@ class HiloProcesamiento (QThread):
                 segmentos[-1] = segmentos[-2]
 
             return segmentos
-
-     
-
+  
     def detener(self):
-        self.procesamiento_activo = False
+        self._activo = False
 
-class HiloMatrizBits(QThread):
+class HiloMatrizBits(QThread): # Hilo para convertir datos procesados en matriz de booleanos.
     senal_matriz_bits = pyqtSignal(object)
 
-    def __init__(self, segmentos):
+    def __init__(self): #dato
         super().__init__()
-        self.segmentos = segmentos
+        self._activo = True
+        self.datos = None
+
+    def run(self):
+        if self._activo:
+            matriz = self.generar_matriz_booleanos(self.datos)
+            self.senal_matriz_bits.emit(matriz)
+
+    def recibir_dato(self, datos):
+        self.datos = datos
+        if not self.isRunning:
+            self.start()
+        ...
 
     def generar_matriz_booleanos(self, segmentos):
         # Matriz de booleanos.
@@ -115,13 +165,37 @@ class HiloMatrizBits(QThread):
                 lista_bits.append(bits) # Lista de arreglos Numpy
         
         matriz = np.array(lista_bits, dtype= bool)
+        return matriz
+    
+    def detener(self):
+        self._activo = False
+        ...
 
-class HiloGrafica(QThread):
-    senal_arreglo_datos = pyqtSignal(object)
+class HiloGrafica(QThread): # Hilo para convertir datos procesados en una gráfica.
+    senal_grafica = pyqtSignal(object)
 
-    def __init__(self, segmentos):
+    def __init__(self): #datos
         super().__init__()
-        self.segmentos = segmentos
+        self._activo = True
+        self.datos = None
+
+    def run(self):
+        if self._activo:
+            self.generar_grafica(self, self.datos)
+            self.senal_grafica.emit()
+        ...
+
+    def recibir_dato(self, datos):
+        self.datos = datos
+        self.start()
+        ...
+
+    def generar_grafica(self, datos):
+        ...
+
+    def detener(self):
+        self._activo = False
+        ...
 
 class VentanaPrincipal(QMainWindow):
     def __init__(self):
@@ -131,12 +205,14 @@ class VentanaPrincipal(QMainWindow):
         self.serial_port = None
         self.conectado = False
         self.boton_estado = False
+        self.cola_datos = Queue()
 
         # Métodos de la sub-clase.
         self.setWindowTitle("Comunicación Silicon.")
-        self.setGeometry(200, 200, 400, 600)
+        self.setGeometry(200, 200, 800, 600)
 
         self.crear_widgets()
+        self.instanciar_hilos()
         self.conectar_senales()
 
         if self.boton_estado:
@@ -168,8 +244,14 @@ class VentanaPrincipal(QMainWindow):
         datos = np.array([10, 30, 20, 40, 60, 20, 10], dtype=np.uint8)
         self.grafica.plot(datos, pen='g')  # 'g' = verde
 
+        #Matriz de bits.
+        self.matriz = MatrizBit(self)
+        self.matriz.move(380, 10)
+
     def conectar_senales(self):
         self.boton_start_sesion.clicked.connect(self.abrir_o_cerrar)
+        self.hilo_matriz_bits.senal_matriz_bits.connect(self.matriz.actualizar)
+        # self.hilo_grafico.senal_grafica.connect()
         
     def abrir_o_cerrar(self):
         if not self.conectado:
@@ -195,7 +277,7 @@ class VentanaPrincipal(QMainWindow):
                 self.estatus.setText ("Conectado")
 
                 # Iniciar hilo de lectura de datos serial.
-                self.hilo_serial = HiloSerial(self.serial_port)
+                self.hilo_serial = HiloSerial(self.serial_port, self.cola_datos)
                 self.hilo_serial.datos_recibidos.connect(self.mostrar_dato_recibido) # Cuando se emita una señal se llamará a la función mostrar_dato_recibido.
                 self.hilo_serial.start()
                 
@@ -226,10 +308,19 @@ class VentanaPrincipal(QMainWindow):
     def mostrar_dato_recibido(self, datos):
         print(f"Dato recibido en GUI, {datos}")
 
-    def procesar_buffer(self):
-        #Iniciar hilo de procesamiento de buffer.
+    def instanciar_hilos(self):
+        # Instanciar hilos de procesos paralelos a ventana.
+        self.hilo_procesamiento = HiloProcesamiento(self.cola_datos)
+        self.hilo_matriz_bits = HiloMatrizBits()
+        self.hilo_grafico = HiloGrafica()
+
+        # Conectar señales entre hilos.
+        self.hilo_procesamiento.senal_procesada.connect(self.hilo_matriz_bits.recibir_dato)
+        self.hilo_procesamiento.senal_procesada.connect(self.hilo_grafico.recibir_dato)
+        #self.hilo_matriz_bits.senal_matriz_bits.connect(self.)   
+        #self.hilo_grafico.senal_grafica.connect()
         ...
-        
+    
     def closeEvent(self, event):
         # Si existe el hilo serial, detenerlo y esperar a que termine
         # La función hasattr verifica si un objeto tiene el atributo indicado.
