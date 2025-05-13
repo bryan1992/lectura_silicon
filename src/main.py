@@ -1,6 +1,6 @@
 import sys
 from PyQt6.QtWidgets import QApplication, QMainWindow, QComboBox, QLabel, QPushButton, QWidget
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QThread, pyqtSignal, QMutex
 import pyqtgraph as pg
 from serial import Serial
 import serial.tools.list_ports
@@ -141,17 +141,22 @@ class HiloMatrizBits(QThread): # Hilo para convertir datos procesados en matriz 
         super().__init__()
         self._activo = True
         self.datos = None
+        self.lock = QMutex()
 
     def run(self):
-        if self._activo:
-            matriz = self.generar_matriz_booleanos(self.datos)
-            self.senal_matriz_bits.emit(matriz)
+        while self._activo:
+            self.lock.lock()
+            if self.datos is not None:
+                matriz = self.generar_matriz_booleanos(self.datos)
+                self.datos = None
+                self.senal_matriz_bits.emit(matriz)
+            self.lock.unlock()
+            self.msleep(50) # Espera para no saturar el CPU.
+
 
     def recibir_dato(self, datos):
+        self.lock.lock()
         self.datos = datos
-        if not self.isRunning:
-            self.start()
-        ...
 
     def generar_matriz_booleanos(self, segmentos):
         # Matriz de booleanos.
@@ -169,7 +174,6 @@ class HiloMatrizBits(QThread): # Hilo para convertir datos procesados en matriz 
     
     def detener(self):
         self._activo = False
-        ...
 
 class HiloGrafica(QThread): # Hilo para convertir datos procesados en una gráfica.
     senal_grafica = pyqtSignal(object)
@@ -180,22 +184,24 @@ class HiloGrafica(QThread): # Hilo para convertir datos procesados en una gráfi
         self.datos = None
 
     def run(self):
-        if self._activo:
-            self.generar_grafica(self, self.datos)
-            self.senal_grafica.emit()
-        ...
+        while self._activo:
+            if self.datos is not None:
+                eje_x, datos = self.generar_grafica(self.datos)
+                self.senal_grafica.emit((eje_x, datos))
+            self.msleep(100)
 
     def recibir_dato(self, datos):
         self.datos = datos
-        self.start()
-        ...
 
-    def generar_grafica(self, datos):
-        ...
-
+    def generar_grafica(self, datos_y):
+        dt = 0.0001 # Intervalo de muestreo.
+        t_actual = time.time()
+        t0 = t_actual - len(datos_y) * dt
+        eje_x = np.linspace(t0, t0 + (len(datos_y) - 1) * dt, len(datos_y))
+        return eje_x, datos_y
+    
     def detener(self):
         self._activo = False
-        ...
 
 class VentanaPrincipal(QMainWindow):
     def __init__(self):
@@ -206,6 +212,10 @@ class VentanaPrincipal(QMainWindow):
         self.conectado = False
         self.boton_estado = False
         self.cola_datos = Queue()
+
+        # Variables para gráfico.
+        self.curva = self.grafica.plot([], pen='g')  # curva "viva"
+        self.inicio_tiempo = time.time()  # Para el cálculo de t0.
 
         # Métodos de la sub-clase.
         self.setWindowTitle("Comunicación Silicon.")
@@ -238,6 +248,7 @@ class VentanaPrincipal(QMainWindow):
 
         # Gráfica de datos en tiempo real.
         self.grafica = pg.PlotWidget(self)
+        self.curva = self.grafica.plot([], [], pen='g')  # Inicializa la curva vacía
         self.grafica.resize(350, 200)
         self.grafica.move(10, 200)
         # Datos de ejemplo
@@ -278,8 +289,8 @@ class VentanaPrincipal(QMainWindow):
 
                 # Iniciar hilo de lectura de datos serial.
                 self.hilo_serial = HiloSerial(self.serial_port, self.cola_datos)
-                self.hilo_serial.datos_recibidos.connect(self.mostrar_dato_recibido) # Cuando se emita una señal se llamará a la función mostrar_dato_recibido.
                 self.hilo_serial.start()
+                
                 
              else:
                 self.estatus.setText("No se pudo abrir el puerto")
@@ -308,17 +319,25 @@ class VentanaPrincipal(QMainWindow):
     def mostrar_dato_recibido(self, datos):
         print(f"Dato recibido en GUI, {datos}")
 
+    def actualizar_grafica(self, paquete: tuple[np.ndarray, np.ndarray]):
+        eje_x, datos = paquete
+        self.curva.setData(eje_x, datos)
+
     def instanciar_hilos(self):
         # Instanciar hilos de procesos paralelos a ventana.
         self.hilo_procesamiento = HiloProcesamiento(self.cola_datos)
         self.hilo_matriz_bits = HiloMatrizBits()
         self.hilo_grafico = HiloGrafica()
-
+        
         # Conectar señales entre hilos.
         self.hilo_procesamiento.senal_procesada.connect(self.hilo_matriz_bits.recibir_dato)
         self.hilo_procesamiento.senal_procesada.connect(self.hilo_grafico.recibir_dato)
-        #self.hilo_matriz_bits.senal_matriz_bits.connect(self.)   
-        #self.hilo_grafico.senal_grafica.connect()
+        self.hilo_grafico.senal_grafica.connect(self.actualizar_grafica)
+
+        # Iniciar ejecución de hilos.
+        self.hilo_procesamiento.start()
+        self.hilo_matriz_bits.start()
+        self.hilo_grafico.start()
         ...
     
     def closeEvent(self, event):
