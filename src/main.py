@@ -1,12 +1,14 @@
 import sys
 from PyQt6.QtWidgets import QApplication, QMainWindow, QComboBox, QLabel, QPushButton, QWidget
-from PyQt6.QtCore import QThread, pyqtSignal, QMutex
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QMutex
+from PyQt6.QtGui import QImage, QPixmap, QColor, QPainter
 import pyqtgraph as pg
 from serial import Serial
 import serial.tools.list_ports
 import numpy as np
 import time
 from queue import Queue
+from PyQt6 import QtGui
 
 class ComboBoxDinamico (QComboBox):
     def __init__(self, parent = None):
@@ -21,45 +23,46 @@ class ComboBoxDinamico (QComboBox):
         self.clear()
         for puerto in puertos:
             self.addItem(puerto.device)
-
-class MatrizBit(QWidget):
-    def __init__(self, parent = None, rows = 20, cols = 8, spacing_x = 50, spacing_y = 20):
+       
+class MatrizRapida(QWidget):
+    def __init__(self, parent = None, filas = 20, columnas = 8, tam_celda: int = 20):
         super().__init__(parent)
-        self.rows = rows
-        self.cols = cols
-        self.spacing_x = spacing_x
-        self.spacing_y = spacing_y
-        self.labels = []
-        self.bool_matrix = [[False for _ in range(self.cols)] for _ in range(self.rows)]
-        self.setFixedSize(cols * spacing_x + 20, rows * spacing_y + 20)
+        self.filas = filas
+        self.columnas = columnas
+        self.tam_celda = tam_celda
 
-        # Crear matriz de labels.
-        for i in range(rows):
-            row = []
-            for j in range(cols):
-                label = QLabel("False", self)
-                label.move(j * spacing_x + 20, i * spacing_y + 20)
-                label.setStyleSheet("color: black; font-weight: bold;")
-                row.append(label)
+        self.label = QLabel(self)
+        self.label.setGeometry(0, 0, columnas * tam_celda, filas * tam_celda)
 
-            self.labels.append(row)
-
-    def actualizar(self, matriz):
-        # Validar dimensiones primero
-        if matriz.shape[0] > self.rows or matriz.shape[1] > self.cols:
-            print("⚠️ La matriz recibida excede las dimensiones visuales configuradas.")
-            return
-
-        for i in range(matriz.shape[0]):
-            for j in range(matriz.shape[1]):
-                valor = matriz[i][j]
-                self.bool_matrix[i][j] = valor
-                texto = "True" if valor else "False"
-                color = "green" if valor else "red"
-                self.labels[i][j].setText(texto)
-                self.labels[i][j].setStyleSheet(f"color: {color}; font-weight: bold;")
-        ...
+        self.imagen = QImage(columnas * tam_celda, filas * tam_celda, QImage.Format.Format_RGB32)
+        self.imagen.fill(Qt.GlobalColor.black)
         
+        painter = QPainter(self.imagen)
+        for fila in range(filas):
+            for columna in range(columnas):
+                rect_x = columna * tam_celda
+                rect_y = fila * tam_celda
+                painter.fillRect(rect_x, rect_y, tam_celda, tam_celda, QColor("gray"))
+                # Opcional: dibujar borde
+                painter.setPen(QColor("black"))
+                painter.drawRect(rect_x, rect_y, tam_celda - 1, tam_celda -1)
+        painter.end()
+
+        self.label.setPixmap(QPixmap.fromImage(self.imagen))
+
+    def actualizar(self, matriz_bits: np.ndarray):
+        painter = QPainter(self.imagen)
+        for fila in range(min(self.filas, matriz_bits.shape[0])):
+            for columna in range(min(self.columnas, matriz_bits.shape[1])):
+                x = columna * self.tam_celda
+                y = fila * self.tam_celda
+                color = Qt.GlobalColor.green if matriz_bits[fila, columna] else Qt.GlobalColor.gray
+                painter.fillRect(x, y, self.tam_celda, self.tam_celda, color)
+                painter.setPen(QColor("gray"))
+                painter.drawRect(x, y, self.tam_celda - 1, self.tam_celda - 1)
+        painter.end()
+        self.label.setPixmap(QPixmap.fromImage(self.imagen))
+
 
 class HiloSerial(QThread): # Hilo para recibir datos mediante RS-232.
     
@@ -157,6 +160,7 @@ class HiloMatrizBits(QThread): # Hilo para convertir datos procesados en matriz 
     def recibir_dato(self, datos):
         self.lock.lock()
         self.datos = datos
+        self.lock.unlock()
 
     def generar_matriz_booleanos(self, segmentos):
         # Matriz de booleanos.
@@ -205,6 +209,8 @@ class HiloGrafica(QThread): # Hilo para convertir datos procesados en una gráfi
 
 class VentanaPrincipal(QMainWindow):
     def __init__(self):
+
+        inicio = time.time()
         super().__init__()
 
         self.hilo_serial = None
@@ -213,23 +219,27 @@ class VentanaPrincipal(QMainWindow):
         self.boton_estado = False
         self.cola_datos = Queue()
 
-        # Variables para gráfico.
-        self.curva = self.grafica.plot([], pen='g')  # curva "viva"
-        self.inicio_tiempo = time.time()  # Para el cálculo de t0.
-
         # Métodos de la sub-clase.
         self.setWindowTitle("Comunicación Silicon.")
-        self.setGeometry(200, 200, 800, 600)
+        self.setGeometry(200, 200, 600, 600)
 
         self.crear_widgets()
         self.instanciar_hilos()
         self.conectar_senales()
 
+        # Variables para gráfico.
+        self.inicio_tiempo = time.time()  # Para el cálculo de t0.
+
         if self.boton_estado:
             self.configurar_puerto()
+
+        final = time.time()
+        print(f"El tiempo del método constructor fue {final - inicio} segundos.")
     
     def crear_widgets(self):
         
+        inicio = time.time()
+
         # Etiqueta de combo box.
         self.combo_box_label = QLabel("Puertos COM",self)
         self.combo_box_label.move(10, 5)
@@ -251,18 +261,24 @@ class VentanaPrincipal(QMainWindow):
         self.curva = self.grafica.plot([], [], pen='g')  # Inicializa la curva vacía
         self.grafica.resize(350, 200)
         self.grafica.move(10, 200)
-        # Datos de ejemplo
-        datos = np.array([10, 30, 20, 40, 60, 20, 10], dtype=np.uint8)
-        self.grafica.plot(datos, pen='g')  # 'g' = verde
+        
+        # Etiqueta de matriz de entradas digitales.
+        self.matriz_label = QLabel("Entradas digitales", self)
+        self.matriz_label.move(380, 10)
 
-        #Matriz de bits.
-        self.matriz = MatrizBit(self)
-        self.matriz.move(380, 10)
+        #Matriz de bits eficiente.
+        self.matriz_2 = MatrizRapida(self, 20, 8, 20)
+        self.matriz_2.move(380, 40)
+        self.matriz_2.setFixedSize(self.matriz_2.tam_celda * self.matriz_2.columnas, self.matriz_2.tam_celda * self.matriz_2.filas)
+
+        final = time.time()
+        print(f"La creación de Widgets duró {final - inicio} segundos")
 
     def conectar_senales(self):
         self.boton_start_sesion.clicked.connect(self.abrir_o_cerrar)
-        self.hilo_matriz_bits.senal_matriz_bits.connect(self.matriz.actualizar)
+        self.hilo_matriz_bits.senal_matriz_bits.connect(self.matriz_2.actualizar)
         # self.hilo_grafico.senal_grafica.connect()
+
         
     def abrir_o_cerrar(self):
         if not self.conectado:
@@ -277,7 +293,7 @@ class VentanaPrincipal(QMainWindow):
          try:
              self.serial_port = Serial(
                    port = puerto_seleccionado,
-                   baudrate = 9600,
+                   baudrate = 6_000_000, # 6 Mega Baudios.
                    bytesize = 8,
                    parity = 'N',
                    stopbits = 1,
@@ -321,7 +337,7 @@ class VentanaPrincipal(QMainWindow):
 
     def actualizar_grafica(self, paquete: tuple[np.ndarray, np.ndarray]):
         eje_x, datos = paquete
-        self.curva.setData(eje_x, datos)
+        self.curva.setData(eje_x, datos) # setData actualiza la curva existente con los parámetros que se indiquen.
 
     def instanciar_hilos(self):
         # Instanciar hilos de procesos paralelos a ventana.
@@ -354,9 +370,14 @@ class VentanaPrincipal(QMainWindow):
             self.serial_port = None
 
         event.accept()  # Aceptar el cierre de la ventana
-    
+
+inicio = time.time()
+
 app = QApplication(sys.argv)
 ventana = VentanaPrincipal()
 ventana.show()
+
+final = time.time()
+print(f"Tiempo total hasta ventana.show fue de {final - inicio} segundos.")
 
 sys.exit(app.exec())
